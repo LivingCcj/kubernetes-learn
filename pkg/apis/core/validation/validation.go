@@ -26,6 +26,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"unsafe"
 	"unicode"
 	"unicode/utf8"
 
@@ -45,6 +46,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	v1qos "k8s.io/kubernetes/pkg/apis/core/v1/helper/qos"
 	apiservice "k8s.io/kubernetes/pkg/api/service"
 	"k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/apis/core/helper"
@@ -3735,8 +3737,23 @@ func ValidatePodUpdate(newPod, oldPod *core.Pod) field.ErrorList {
 	mungedPod := *newPod
 	// munge spec.containers[*].image
 	var newContainers []core.Container
+	var qosCheck bool
 	for ix, container := range mungedPod.Spec.Containers {
 		container.Image = oldPod.Spec.Containers[ix].Image
+		if utilfeature.DefaultFeatureGate.Enabled(feature.AllowPodResourcePatch){
+			if !apiequality.Semantic.DeepEqual(container.Resource,oldPod.Spec.Container[ix].Resource){
+				container.Resource=oldPod.Spec.Containers[ix].Resource
+				// only qos burstable -> burstable 
+				if !qosCheck {
+					oldQos := v1qos.GetPodQoS((*v1.Pod)(unsafe.Pointer(oldPod)))
+					newQos := v1qos.GetPodQoS((*v1.Pod)(unsafe.Pointer(newPod)))
+					if newQos != v1.PodQOSBurstable || oldQos != v1.PodQOSBurstable {
+						allErrors = append(allErrors,field.Forbidden(specPath.Child("resources"),fmt.Sprintf("qos must be burstable. oldQos=%s,newQos=%s",oldQos,newQos)))
+					}
+					qosCheck= true
+				}
+			}
+		}
 		newContainers = append(newContainers, container)
 	}
 	mungedPod.Spec.Containers = newContainers

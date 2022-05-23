@@ -503,6 +503,9 @@ const (
 	// Enable the aggregated discovery timeout to ensure client responsiveness. Note this feature is present
 	// only for backward compatibility, it will be removed in the 1.17 release.
 	EnableAggregatedDiscoveryTimeout featuregate.Feature = "EnableAggregatedDiscoveryTimeout"
+
+	InplaceVpa feature.Feature="InplaceVpa"
+	AllowPodResourcePatch feature.Feature="AllowPodResourcePatch"
 )
 
 func init() {
@@ -584,7 +587,8 @@ var defaultKubernetesFeatureGates = map[featuregate.Feature]featuregate.FeatureS
 	EndpointSlice:                                  {Default: false, PreRelease: featuregate.Alpha},
 	EvenPodsSpread:                                 {Default: false, PreRelease: featuregate.Alpha},
 	StartupProbe:                                   {Default: false, PreRelease: featuregate.Alpha},
-
+	InplaceVpa:                                   {Default: false, PreRelease: featuregate.Alpha},
+	AllowPodResourcePatch:                                   {Default: false, PreRelease: featuregate.Alpha},
 	// inherited features from generic apiserver, relisted here to get a conflict if it is changed
 	// unintentionally on either side:
 	genericfeatures.StreamingProxyRedirects: {Default: true, PreRelease: featuregate.Beta},

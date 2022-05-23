@@ -76,11 +76,12 @@ func (m *podContainerManagerImpl) Exists(pod *v1.Pod) bool {
 // EnsureExists takes a pod as argument and makes sure that
 // pod cgroup exists if qos cgroup hierarchy flag is enabled.
 // If the pod level container doesn't already exist it is created.
-func (m *podContainerManagerImpl) EnsureExists(pod *v1.Pod) error {
+// for inplace vpa, recreate the cgroup files 
+func (m *podContainerManagerImpl) EnsureExists(pod *v1.Pod,forceUpdate bool) error {
 	podContainerName, _ := m.GetPodContainerName(pod)
 	// check if container already exist
 	alreadyExists := m.Exists(pod)
-	if !alreadyExists {
+	if !alreadyExists || forceUpdate {
 		// Create the pod container
 		containerConfig := &CgroupConfig{
 			Name:               podContainerName,
@@ -296,7 +297,7 @@ func (m *podContainerManagerNoop) Exists(_ *v1.Pod) bool {
 	return true
 }
 
-func (m *podContainerManagerNoop) EnsureExists(_ *v1.Pod) error {
+func (m *podContainerManagerNoop) EnsureExists(_ *v1.Pod _ bool) error {
 	return nil
 }
 
