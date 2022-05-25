@@ -1451,6 +1451,61 @@ func (kl *Kubelet) Run(updates <-chan kubetypes.PodUpdate) {
 	kl.syncLoop(updates, kl)
 }
 
+//a pod level cgroup should be updated only if at least one container matches the following conditions:
+//1.both old pod qos and cur pod qos must be bustable
+//2.container info without resource is not changed
+//3.container resource info has changed
+
+//the time when to update pod level cgroup is determined by whether reduce pod cpu_quota or not
+//if reduce pod cpu_quota, we should update pod level cgroup after container level cgroup updating
+//if enlarge pod cpu_quota, we should update pod level cgroup before container level cgroup updating
+type UpdatePodCgroupType int
+
+const (
+	UpdatePodCgroupSkip UpdatePodCgroupType = iota
+	UpdatePodCgroupBefore
+	UpdatePodCgroupAfter
+)
+
+func needUpdatePodCgroup(pod *v1.Pod, podStatus *kubecontainer.PodStatus) (res UpdatePodCgroupType, killPod bool) {
+	res = UpdatePodCgroupSkip
+	killPod = false
+
+	needUpdate := false
+	totalCpuQuotaDiff := int64(0)
+	for _, container := range pod.Spec.Containers {
+		// find corresponding containerStatus
+		containerStatus := podStatus.FindContainerStatusByName(container.Name)
+
+		if containerStatus == nil {
+			klog.Warningf("[vpa]cannot find corresponding containerStatus. container=%s", container.Name)
+			continue
+		} else {
+			// diff updated container with containerStatus
+			_, _, _, resourceChanged, cpuQuotaDiff := kuberuntime.ContainerChanged(&container, containerStatus,pod)
+			totalCpuQuotaDiff += cpuQuotaDiff
+			if resourceChanged {
+				needUpdate = true
+			}
+		}
+	}
+	if !needUpdate {
+		res = UpdatePodCgroupSkip
+	} else {
+		killPod = pod.Status.QOSClass != v1qos.GetPodQOS(pod)
+		if killPod {
+			klog.Infof("[vpa]QOS will change. pod=%s, before=%s, after=%s", pod.Name, pod.Status.QOSClass, v1qos.GetPodQOS(pod))
+		}
+
+		if totalCpuQuotaDiff >= 0 {
+			res = UpdatePodCgroupBefore
+		} else {
+			res = UpdatePodCgroupAfter
+		}
+	}
+	return
+}
+
 // syncPod is the transaction script for the sync of a single pod.
 //
 // Arguments:
@@ -1595,6 +1650,7 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 	pcm := kl.containerManager.NewPodContainerManager()
 	// If pod has already been terminated then we need not create
 	// or update the pod's cgroup
+	podCgroupUpdateStrategy := UpdatePodCgroupSkip
 	if !kl.podIsTerminated(pod) {
 		// When the kubelet is restarted with the cgroups-per-qos
 		// flag enabled, all the pod's running containers
@@ -1608,10 +1664,16 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 				break
 			}
 		}
+		killPod := false
+		if utilfeature.DefaultFeatureGate.Enabled(features.InplaceVpa) && updateType == kubetypes.SyncPodUpdate {
+			podCgroupUpdateStrategy, killPod = needUpdatePodCgroup(pod, podStatus)
+		}
+
+
 		// Don't kill containers in pod if pod's cgroups already
 		// exists or the pod is running for the first time
 		podKilled := false
-		if !pcm.Exists(pod) && !firstSync {
+		if (!pcm.Exists(pod) && !firstSync) || killPod {
 			if err := kl.killPod(pod, nil, podStatus, nil); err == nil {
 				podKilled = true
 			}
@@ -1624,11 +1686,15 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 		// they are not expected to run again.
 		// We don't create and apply updates to cgroup if its a run once pod and was killed above
 		if !(podKilled && pod.Spec.RestartPolicy == v1.RestartPolicyNever) {
-			if !pcm.Exists(pod) {
+			updateBefore := podCgroupUpdateStrategy == UpdatePodCgroupBefore
+			if !pcm.Exists(pod) ||  updateBefore {
 				if err := kl.containerManager.UpdateQOSCgroups(); err != nil {
 					klog.V(2).Infof("Failed to update QoS cgroups while syncing pod: %v", err)
 				}
-				if err := pcm.EnsureExists(pod); err != nil {
+				if updateBefore {
+					klog.Infof("[vpa]Update pod level cgroup. pod=%s, podId=%s", pod.Name, pod.UID)
+				}
+				if err := pcm.EnsureExists(pod,updateBefore); err != nil {
 					kl.recorder.Eventf(pod, v1.EventTypeWarning, events.FailedToCreatePodContainer, "unable to ensure pod container exists: %v", err)
 					return fmt.Errorf("failed to ensure that the pod: %v cgroups exist and are correctly applied: %v", pod.UID, err)
 				}
@@ -1688,7 +1754,9 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 	pullSecrets := kl.getPullSecretsForPod(pod)
 
 	// Call the container runtime's SyncPod callback
+	pod.Labels[kubetypes.CustomNeedUpdateResourceLabel] = fmt.Sprintf("%v",updateType == kubetypes.SyncPodUpdate)
 	result := kl.containerRuntime.SyncPod(pod, podStatus, pullSecrets, kl.backOff)
+	delete(pod.Labels, kubetypes.CustomNeedUpdateResourceLabel)
 	kl.reasonCache.Update(pod.UID, result)
 	if err := result.Error(); err != nil {
 		// Do not return error if the only failures were pods in backoff
@@ -1701,6 +1769,24 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 		}
 
 		return nil
+	}
+
+	// if need reduce pod level cpuQuota, we should update pod level cgroup after updating container level cgroup
+	if podCgroupUpdateStrategy == UpdatePodCgroupAfter {
+		klog.Infof("[vpa]Update pod level cgroup. pod=%s, podId=%s", pod.Name, pod.UID)
+		if err := pcm.EnsureExists(pod, true); err != nil {
+			kl.recorder.Eventf(pod, v1.EventTypeWarning, events.FailedToCreatePodContainer, "unable to ensure pod container exists: %v", err)
+			return fmt.Errorf("failed to ensure that the pod: %v cgroups exist and are correctly applied: %v", pod.UID, err)
+		}
+	}
+
+	//update pod status cache if we have changed cgroup without restart
+	if podCgroupUpdateStrategy != UpdatePodCgroupSkip {
+		klog.Infof("[vpa]Update pod status cache. pod=%s", podStatus.Name)
+		p := kubecontainer.ConvertPodStatusToRunningPod(kl.getRuntime().Type(), podStatus)
+		if err := kl.pleg.UpdateCache(&p, p.ID); err != nil {
+			klog.Infof("[vpa]Update pod status cache failed. pod=%s, err=%+v", podStatus.Name, err)
+		}
 	}
 
 	return nil

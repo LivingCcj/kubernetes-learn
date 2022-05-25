@@ -84,4 +84,7 @@ const (
 	// Lifecycle hooks
 	FailedPostStartHook = "FailedPostStartHook"
 	FailedPreStopHook   = "FailedPreStopHook"
+
+	// vpa event reason list
+	VpaUpdateResource  = "VpaUpdateResource"
 )

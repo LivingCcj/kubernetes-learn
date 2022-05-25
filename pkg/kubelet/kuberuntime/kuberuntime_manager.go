@@ -400,6 +400,9 @@ type podActions struct {
 	// EphemeralContainersToStart is a list of indexes for the ephemeral containers to start,
 	// where the index is the index of the specific container in pod.Spec.EphemeralContainers.
 	EphemeralContainersToStart []int
+
+	// containers which should update resource without restart
+	ContainersToUpdateResources map[int]*kubecontainer.ContainerStatus
 }
 
 // podSandboxChanged checks whether the spec of the pod is changed and returns
@@ -443,9 +446,26 @@ func (m *kubeGenericRuntimeManager) podSandboxChanged(pod *v1.Pod, podStatus *ku
 	return false, sandboxStatus.Metadata.Attempt, sandboxStatus.Id
 }
 
-func containerChanged(container *v1.Container, containerStatus *kubecontainer.ContainerStatus) (uint64, uint64, bool) {
+func containerChanged(container *v1.Container, containerStatus *kubecontainer.ContainerStatus,pod *v1.Pod) (uint64, uint64, bool,bool,int64) {
+	// diff resource
+	newCpuQuota := milliCPUToQuota(container.Resources.Limits.Cpu().MilliValue(), containerStatus.CpuPeriod)
+	newCpuShares := milliCPUToShares(container.Resources.Requests.Cpu().MilliValue())
+	resourceChanged := newCpuQuota != containerStatus.CpuQuota || newCpuShares != containerStatus.CpuShares
+	cpuQuotaDiff := newCpuQuota - containerStatus.CpuQuota
+
 	expectedHash := kubecontainer.HashContainer(container)
-	return expectedHash, containerStatus.Hash, containerStatus.Hash != expectedHash
+
+	// diff container hash without resource info
+	changed := false
+	// if pod has label CustomForbidRestartLabel, container will never be restarted for hash reason
+	if _, ok := pod.Labels[types.CustomForbidRestartLabel]; ok {
+		klog.Infof("container %s hash changed, but has pod label: %s. should not be restarted.",
+			container.Name, types.CustomForbidRestartLabel)
+		changed = false
+	} else {
+		changed = containerStatus.Hash != expectedHash
+	}
+	return expectedHash, containerStatus.Hash, changed, resourceChanged, cpuQuotaDiff
 }
 
 func shouldRestartOnFailure(pod *v1.Pod) bool {
@@ -471,6 +491,7 @@ func (m *kubeGenericRuntimeManager) computePodActions(pod *v1.Pod, podStatus *ku
 		SandboxID:         sandboxID,
 		Attempt:           attempt,
 		ContainersToStart: []int{},
+		ContainersToUpdateResources:make(map[kubecontainer.ContainerID]containerToKillInfo),
 		ContainersToKill:  make(map[kubecontainer.ContainerID]containerToKillInfo),
 	}
 
@@ -582,7 +603,8 @@ func (m *kubeGenericRuntimeManager) computePodActions(pod *v1.Pod, podStatus *ku
 		// The container is running, but kill the container if any of the following condition is met.
 		var message string
 		restart := shouldRestartOnFailure(pod)
-		if _, _, changed := containerChanged(&container, containerStatus); changed {
+		_, _, changed,resourceChanged,_ := ContainerChanged(&container, containerStatus, pod)
+		if changed {
 			message = fmt.Sprintf("Container %s definition changed", container.Name)
 			// Restart regardless of the restart policy because the container
 			// spec changed.
@@ -591,6 +613,9 @@ func (m *kubeGenericRuntimeManager) computePodActions(pod *v1.Pod, podStatus *ku
 			// If the container failed the liveness probe, we should kill it.
 			message = fmt.Sprintf("Container %s failed liveness probe", container.Name)
 		} else {
+			if utilfeature.DefaultFeatureGate.Enabled(feature.InplaceVpa) && resourceChanged{
+				changes.ContainersToUpdateResources[idx]=containerStatus
+			}
 			// Keep the container.
 			keepCount++
 			continue
@@ -815,6 +840,28 @@ func (m *kubeGenericRuntimeManager) SyncPod(pod *v1.Pod, podStatus *kubecontaine
 		start("container", &pod.Spec.Containers[idx])
 	}
 
+	if v, _ := pod.Labels[types.CustomNeedUpdateResourceLabel]; v == "true" {
+		for idx,containerStatus := range. podContainerChanges.ContainersToUpdateResources{
+			contianer := &pod.Spec.Conditions[idx]
+			cpuLimit := container.Resource.Limits.Cpu().MilliValue()
+			cpuQuota := milliCPUToQuota(cpuLimit,containerStatus.CpuPeriod)
+			cpuRequest := container.Resource.Request.Cpu().MilliValue()
+			cpuShares := milliCPUToShares(cpuRequest)
+			resources := runtimeapi.LinuxContainerResources{
+				CpuQuota: cpuQuota,
+				CpuShares: cpuShares,
+			}
+			err:=m.runtimeService.UpdateContainerResources(containerStatus.ID.ID,&resources)
+			klog.Infof("[vpa]Update container resources. container=%s, containerId=%s, LinuxContainerResources=%+v, err=%+v",
+				container.Name, containerStatus.ID.ID, resources, err)
+			ref,referr:=ref.GetReference(legacyscheme.Scheme,pod)
+			if referr!=nil{
+				klog.Errorf("Couldn't make a ref to pod %q: '%v'", format.Pod(pod), referr)
+			}
+			m.recorder.Eventf(ref, v1.EventTypeNormal, events.VpaUpdateResource, "Update container resources. [container=%s, cpuLimit=%d, cpuRequest=%d, time=%s].",
+			container.Name, cpuLimit, cpuRequest, time.Now().String())
+		}
+	}
 	return
 }
 
@@ -930,6 +977,9 @@ func (m *kubeGenericRuntimeManager) GetPodStatus(uid kubetypes.UID, name, namesp
 
 	// Get statuses of all containers visible in the pod.
 	containerStatuses, err := m.getPodContainerStatuses(uid, name, namespace)
+	for _, status := range containerStatuses {
+		status.CpuPeriod = int64(m.cpuCFSQuotaPeriod.Duration / time.Microsecond)
+	}
 	if err != nil {
 		if m.logReduction.ShouldMessageBePrinted(err.Error(), podFullName) {
 			klog.Errorf("getPodContainerStatuses for pod %q failed: %v", podFullName, err)

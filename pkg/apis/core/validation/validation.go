@@ -3689,6 +3689,33 @@ func ValidatePodCreate(pod *core.Pod) field.ErrorList {
 	return allErrs
 }
 
+func deepCopyResourceList(list core.ResourceList) core.ResourceList {
+	if list == nil {
+		return nil
+	}
+	res := core.ResourceList{}
+	for k, v := range list {
+		res[k] = v
+	}
+	return res
+}
+
+func getNewResourceList(newList, oldList core.ResourceList, resource core.ResourceName) core.ResourceList {
+	res := deepCopyResourceList(newList)
+	if res == nil {
+		res = core.ResourceList{}
+	}
+
+	if oldList == nil {
+		delete(res, resource)
+	} else if val, ok := oldList[resource]; !ok {
+		delete(res, resource)
+	} else {
+		res[resource] = val
+	}
+	return res
+}
+
 // ValidatePodUpdate tests to see if the update is legal for an end user to make. newPod is updated with fields
 // that cannot be changed.
 func ValidatePodUpdate(newPod, oldPod *core.Pod) field.ErrorList {
@@ -3742,7 +3769,7 @@ func ValidatePodUpdate(newPod, oldPod *core.Pod) field.ErrorList {
 		container.Image = oldPod.Spec.Containers[ix].Image
 		if utilfeature.DefaultFeatureGate.Enabled(feature.AllowPodResourcePatch){
 			if !apiequality.Semantic.DeepEqual(container.Resource,oldPod.Spec.Container[ix].Resource){
-				container.Resource=oldPod.Spec.Containers[ix].Resource
+				
 				// only qos burstable -> burstable 
 				if !qosCheck {
 					oldQos := v1qos.GetPodQoS((*v1.Pod)(unsafe.Pointer(oldPod)))
@@ -3752,6 +3779,10 @@ func ValidatePodUpdate(newPod, oldPod *core.Pod) field.ErrorList {
 					}
 					qosCheck= true
 				}
+				oldContainer := &(oldPod.Spec.Containers[ix])
+				// allow cpu patch, so copy old cpu resource to new container
+				container.Resources.Limits = getNewResourceList(container.Resources.Limits, oldContainer.Resources.Limits, core.ResourceCPU)
+				container.Resources.Requests = getNewResourceList(container.Resources.Requests, oldContainer.Resources.Requests, core.ResourceCPU)
 			}
 		}
 		newContainers = append(newContainers, container)

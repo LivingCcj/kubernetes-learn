@@ -58,6 +58,9 @@ type labeledContainerInfo struct {
 	ContainerName string
 	PodName       string
 	PodNamespace  string
+	CpuQuota      int64
+	CpuPeriod     int64
+	CpuShares     int64
 	PodUID        kubetypes.UID
 }
 
@@ -175,11 +178,17 @@ func getPodSandboxInfoFromAnnotations(annotations map[string]string) *annotatedP
 
 // getContainerInfoFromLabels gets labeledContainerInfo from labels.
 func getContainerInfoFromLabels(labels map[string]string) *labeledContainerInfo {
+	cpuQuota, _ := getIntValueFromLabel(labels, types.CustomContainerCpuQuotaLabel)
+	cpuPeriod, _ := getIntValueFromLabel(labels, types.CustomContainerCpuPeriodLabel)
+	cpuShares, _ := getIntValueFromLabel(labels, types.CustomContainerCpuSharesLabel)
 	return &labeledContainerInfo{
 		PodName:       getStringValueFromLabel(labels, types.KubernetesPodNameLabel),
 		PodNamespace:  getStringValueFromLabel(labels, types.KubernetesPodNamespaceLabel),
 		PodUID:        kubetypes.UID(getStringValueFromLabel(labels, types.KubernetesPodUIDLabel)),
 		ContainerName: getStringValueFromLabel(labels, types.KubernetesContainerNameLabel),
+		CpuQuota:      int64(cpuQuota),
+		CpuPeriod:     int64(cpuPeriod),
+		CpuShares:     int64(cpuShares),
 	}
 }
 
@@ -241,7 +250,11 @@ func getIntValueFromLabel(labels map[string]string, label string) (int, error) {
 		return intValue, nil
 	}
 	// Do not report error, because there should be many old containers without label now.
-	klog.V(3).Infof("Container doesn't have label %s, it may be an old or invalid container", label)
+	if label != types.CustomContainerCpuQuotaLabel &&
+		label != types.CustomContainerCpuPeriodLabel &&
+		label != types.CustomContainerCpuSharesLabel {
+		klog.V(3).Infof("Container doesn't have label %s, it may be an old or invalid container", label)
+	}
 	// Just set the value to 0
 	return 0, nil
 }

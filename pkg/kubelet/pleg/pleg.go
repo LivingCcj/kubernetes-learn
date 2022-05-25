@@ -54,4 +54,5 @@ type PodLifecycleEventGenerator interface {
 	Start()
 	Watch() chan *PodLifecycleEvent
 	Healthy() (bool, error)
+	UpdateCache(pod *kubecontainer.Pod, pid types.UID) error
 }

@@ -446,6 +446,9 @@ func toKubeContainerStatus(status *runtimeapi.ContainerStatus, runtimeName strin
 		Hash:         annotatedInfo.Hash,
 		RestartCount: annotatedInfo.RestartCount,
 		State:        toKubeContainerState(status.State),
+		CpuQuota: labeledInfo.CpuQuota,
+		CpuShares: labeledInfo.CpuShares,
+		CpuPeriod: labeledInfo.CpuPeriod,
 		CreatedAt:    time.Unix(0, status.CreatedAt),
 	}
 

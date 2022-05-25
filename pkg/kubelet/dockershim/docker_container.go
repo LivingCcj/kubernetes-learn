@@ -411,6 +411,13 @@ func (ds *dockerService) ContainerStatus(_ context.Context, req *runtimeapi.Cont
 	}
 
 	labels, annotations := extractLabels(r.Config.Labels)
+
+
+	// add resource info to labels
+	labels[types.CustomContainerCpuPeriodLabel] = strconv.FormatInt(r.HostConfig.CPUPeriod, 10)
+	labels[types.CustomContainerCpuQuotaLabel] = strconv.FormatInt(r.HostConfig.CPUQuota, 10)
+	labels[types.CustomContainerCpuSharesLabel] = strconv.FormatInt(r.HostConfig.CPUShares, 10)
+	
 	imageName := r.Config.Image
 	if len(ir.RepoTags) > 0 {
 		imageName = ir.RepoTags[0]

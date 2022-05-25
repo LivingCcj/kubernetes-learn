@@ -99,23 +99,16 @@ func HashContainer(container *v1.Container) uint64 {
 	featureEnable := utilfeature.DefaultFeatureGate.Enabled(feature.InplaceVpa)
 	hash := fnv.New32a()
 	if featureEnable {
-		oldCpuLimit := container.Resource.Limits.Cpu().DeepCopy()
-		oldCpuRequest := container.Resource.Request.Cpu().DeepCopy()
-		//temporary remove cpu request and limit when compute hash for inplace vpa
-		container.Resources.Limits[v1.ResourceCPU] = *resource.NewQuantity(0,resource.DecimalSI)
-		container.Resources.Request[v1.ResourceCPU] = *resource.NewQuantity(0,resource.DecimalSI)
-		
-		continerJson,_:=json.Marshal(container)
-		hashutil.DeepHashObject(hash,containerJson)
-		
-		container.Resource.Limit[v1.ResourceCPU] = oldCpuLimit
-		container.Resource.Request[v1.ResourceCPU] = oldCpuRequest
-		
+		newContainer := *container
+		//remove resource when compute hash for inplace vpa
+		newContainer.Resources = v1.ResourceRequirements{}
+		containerJson, _ := json.Marshal(newContainer)
+		hashutil.DeepHashObject(hash, containerJson)
 	} else {
 	// Omit nil or empty field when calculating hash value
 	// Please see https://github.com/kubernetes/kubernetes/issues/53644
-	containerJson, _ := json.Marshal(container)
-	hashutil.DeepHashObject(hash, containerJson)
+		containerJson, _ := json.Marshal(container)
+		hashutil.DeepHashObject(hash, containerJson)
 	}
 	
 	return uint64(hash.Sum32())

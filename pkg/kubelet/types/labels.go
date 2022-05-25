@@ -21,6 +21,16 @@ const (
 	KubernetesPodNamespaceLabel  = "io.kubernetes.pod.namespace"
 	KubernetesPodUIDLabel        = "io.kubernetes.pod.uid"
 	KubernetesContainerNameLabel = "io.kubernetes.container.name"
+
+
+	// temporary store resource info when get container status from dockershim for inplace vpa
+	CustomContainerCpuPeriodLabel = "caster.io/cpuPeriod"
+	CustomContainerCpuQuotaLabel  = "caster.io/cpuQuota"
+	CustomContainerCpuSharesLabel = "caster.io/cpuShares"
+
+	CustomNeedUpdateResourceLabel = "caster.io/needUpdateResource"
+	// forbid restart for hash change
+	CustomForbidRestartLabel = "caster.io/forbidRestart"
 )
 
 func GetContainerName(labels map[string]string) string {

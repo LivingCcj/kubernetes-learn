@@ -238,7 +238,7 @@ func (g *GenericPLEG) relist() {
 	for pid, events := range eventsByPodID {
 		pod := g.podRecords.getCurrent(pid)
 		if g.cacheEnabled() {
-			// updateCache() will inspect the pod and update the cache. If an
+			// UpdateCache() will inspect the pod and update the cache. If an
 			// error occurs during the inspection, we want PLEG to retry again
 			// in the next relist. To achieve this, we do not update the
 			// associated podRecord of the pod, so that the change will be
@@ -247,8 +247,8 @@ func (g *GenericPLEG) relist() {
 			// inspecting the pod and getting the PodStatus to update the cache
 			// serially may take a while. We should be aware of this and
 			// parallelize if needed.
-			if err := g.updateCache(pod, pid); err != nil {
-				// Rely on updateCache calling GetPodStatus to log the actual error.
+			if err := g.UpdateCache(pod, pid); err != nil {
+				// Rely on UpdateCache calling GetPodStatus to log the actual error.
 				klog.V(4).Infof("PLEG: Ignoring events for pod %s/%s: %v", pod.Name, pod.Namespace, err)
 
 				// make sure we try to reinspect the pod during the next relisting
@@ -283,8 +283,8 @@ func (g *GenericPLEG) relist() {
 		if len(g.podsToReinspect) > 0 {
 			klog.V(5).Infof("GenericPLEG: Reinspecting pods that previously failed inspection")
 			for pid, pod := range g.podsToReinspect {
-				if err := g.updateCache(pod, pid); err != nil {
-					// Rely on updateCache calling GetPodStatus to log the actual error.
+				if err := g.UpdateCache(pod, pid); err != nil {
+					// Rely on UpdateCache calling GetPodStatus to log the actual error.
 					klog.V(5).Infof("PLEG: pod %s/%s failed reinspection: %v", pod.Name, pod.Namespace, err)
 					needsReinspection[pid] = pod
 				}
@@ -381,7 +381,7 @@ func (g *GenericPLEG) getPodIPs(pid types.UID, status *kubecontainer.PodStatus) 
 	return oldStatus.IPs
 }
 
-func (g *GenericPLEG) updateCache(pod *kubecontainer.Pod, pid types.UID) error {
+func (g *GenericPLEG) UpdateCache(pod *kubecontainer.Pod, pid types.UID) error {
 	if pod == nil {
 		// The pod is missing in the current relist. This means that
 		// the pod has no visible (active or inactive) containers.
